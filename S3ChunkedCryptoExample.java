@@ -158,7 +158,10 @@ public class S3ChunkedCryptoExample {
                 cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_LENGTH * 8, nonce));
                 byte[] decrypted = cipher.doFinal(encryptedData);
                 fos.write(decrypted);
-            }
+            } finally {
+    drainStream(s3is);  // even if decryption fails
+    s3is.close();       // close stream properly
+}
         }
     }
 }
@@ -171,6 +174,11 @@ public class S3ChunkedCryptoExample {
     return offset == buffer.length;
 }
 
+    // Helper method to drain any leftover stream data
+private void drainStream(InputStream is) throws IOException {
+    byte[] buffer = new byte[8192];
+    while (is.read(buffer) != -1) {}
+}
     private static SecretKey generateKey() throws Exception {
         KeyGenerator keyGen = KeyGenerator.getInstance("AES");
         keyGen.init(128);
