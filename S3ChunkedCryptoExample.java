@@ -153,6 +153,14 @@ public class S3ChunkedCryptoExample {
         }
     }
 }
+    private static boolean readFully(InputStream in, byte[] buffer) throws IOException {
+    int offset = 0;
+    int bytesRead;
+    while (offset < buffer.length && (bytesRead = in.read(buffer, offset, buffer.length - offset)) != -1) {
+        offset += bytesRead;
+    }
+    return offset == buffer.length;
+}
 
     private static SecretKey generateKey() throws Exception {
         KeyGenerator keyGen = KeyGenerator.getInstance("AES");
