@@ -43,6 +43,10 @@ public class S3ChunkedCryptoExample {
 
         System.out.println("Downloading and decrypting full file...");
         downloadAndDecrypt("your-bucket", "encrypted/input.dat", tempDecrypted, key);
+
+        System.out.println("Downloading and decrypting partial file...");
+        File rangeDecrypted = new File("partial_decrypted.txt");
+        decryptRangeByChunkIndex("your-bucket", "encrypted/input.dat", key, 0, 0, rangeDecrypted);
     }
 
     private static void encryptInChunks(File inputFile, File outputFile, SecretKey key, Map<Integer, Long> offsetMap) throws Exception {
