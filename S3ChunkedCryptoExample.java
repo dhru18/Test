@@ -119,6 +119,53 @@ public class S3ChunkedCryptoExample {
         }
     }
 
+    public static void decryptRangeByChunkIndex(String bucket, String key, SecretKey secretKey,
+                                            int startChunkIndex, int endChunkIndex, File outputFile) throws Exception {
+    // Fetch metadata and extract chunkOffsets
+    ObjectMetadata metadata = s3Client.getObjectMetadata(bucket, key);
+    String encodedOffsets = metadata.getUserMetaDataOf("chunk-offsets");
+    byte[] jsonBytes = Base64.getDecoder().decode(encodedOffsets);
+    String json = new String(jsonBytes, "UTF-8");
+
+    Map<Integer, Long> offsetMap = mapper.readValue(json, new TypeReference<Map<Integer, Long>>() {});
+    List<Integer> sortedChunks = new ArrayList<>(offsetMap.keySet());
+    Collections.sort(sortedChunks);
+
+    // Calculate byte range
+    long startByte = offsetMap.get(startChunkIndex);
+    long endByte = (endChunkIndex + 1 < sortedChunks.size())
+            ? offsetMap.get(endChunkIndex + 1) - 1
+            : metadata.getContentLength() - 1;
+
+    System.out.println("Downloading bytes from " + startByte + " to " + endByte);
+
+    GetObjectRequest rangeRequest = new GetObjectRequest(bucket, key)
+            .withRange(startByte, endByte);
+
+    S3Object s3Object = s3Client.getObject(rangeRequest);
+
+    try (InputStream is = s3Object.getObjectContent();
+         FileOutputStream fos = new FileOutputStream(outputFile)) {
+
+        byte[] nonce = new byte[GCM_NONCE_LENGTH];
+        byte[] lenBytes = new byte[4];
+
+        while (is.read(nonce) != -1) {
+            is.read(lenBytes);
+            int len = bytesToInt(lenBytes);
+            byte[] enc = new byte[len];
+            is.read(enc);
+
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            GCMParameterSpec spec = new GCMParameterSpec(GCM_TAG_LENGTH * 8, nonce);
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, spec);
+            byte[] dec = cipher.doFinal(enc);
+            fos.write(dec);
+        }
+    }
+}
+
+
     private static SecretKey generateKey() throws Exception {
         KeyGenerator keyGen = KeyGenerator.getInstance("AES");
         keyGen.init(128);
