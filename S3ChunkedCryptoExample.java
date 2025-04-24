@@ -122,6 +122,7 @@ public class S3ChunkedCryptoExample {
                                             int startChunk, int endChunk, File outputFile) throws Exception {
 // Fetch metadata and extract chunkOffsets
     ObjectMetadata metadata = s3Client.getObjectMetadata(bucket, key);
+    long objectSize = metadata.getContentLength();
     String encodedOffsets = metadata.getUserMetaDataOf("chunk-offsets");
     byte[] jsonBytes = Base64.getDecoder().decode(encodedOffsets);
     String json = new String(jsonBytes, "UTF-8");
@@ -133,9 +134,9 @@ public class S3ChunkedCryptoExample {
     try (FileOutputStream fos = new FileOutputStream(outputFile)) {
         for (int chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex++) {
             long start = chunkOffsets.get(chunkIndex);
-            long end = (chunkIndex + 1 < chunkOffsets.size()) 
-                        ? chunkOffsets.get(chunkIndex + 1) - 1
-                        : null; // until end of file
+            Long end = (chunkIndex + 1 < chunkOffsets.size())
+            ? chunkOffsets.get(chunkIndex + 1) - 1
+            : objectSize - 1;  // ← correct for last chunk
 
             GetObjectRequest rangeRequest = new GetObjectRequest(bucket, key)
                     .withRange(start, end != null ? end : null);
