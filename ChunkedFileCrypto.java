@@ -6,11 +6,11 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import java.io.*;
 import java.security.SecureRandom;
-import java.util.Arrays;
+import java.util.*;
 
 public class ChunkedFileCrypto {
     private static final int GCM_NONCE_LENGTH = 12; // 96 bits
-    private static final int GCM_TAG_LENGTH = 16;  // 128 bits
+    private static final int GCM_TAG_LENGTH = 16;   // 128 bits
     private static final int CHUNK_SIZE = 1024 * 1024; // 1MB
 
     public static void main(String[] args) throws Exception {
@@ -22,13 +22,13 @@ public class ChunkedFileCrypto {
         SecretKey key = generateKey();
 
         System.out.println("Encrypting...");
-        encrypt(inputFile, encryptedFile, key);
+        Map<Integer, Long> chunkOffsets = encrypt(inputFile, encryptedFile, key);
 
-        System.out.println("Decrypting...");
+        System.out.println("Decrypting full file...");
         decrypt(encryptedFile, decryptedFile, key);
 
-        System.out.println("Decrypting byte range...");
-        decryptByteRange(encryptedFile, rangeDecryptedFile, key, 0, CHUNK_SIZE); // First chunk
+        System.out.println("Decrypting chunk 0 and 1...");
+        decryptByteRange(encryptedFile, rangeDecryptedFile, key, chunkOffsets, 0, 1);
     }
 
     public static SecretKey generateKey() throws Exception {
@@ -37,15 +37,21 @@ public class ChunkedFileCrypto {
         return keyGen.generateKey();
     }
 
-    public static void encrypt(File inputFile, File outputFile, SecretKey key) throws Exception {
+    public static Map<Integer, Long> encrypt(File inputFile, File outputFile, SecretKey key) throws Exception {
+        Map<Integer, Long> chunkOffsets = new HashMap<>();
+
         try (FileInputStream fis = new FileInputStream(inputFile);
              FileOutputStream fos = new FileOutputStream(outputFile)) {
 
             byte[] buffer = new byte[CHUNK_SIZE];
             int bytesRead;
             SecureRandom random = new SecureRandom();
+            int chunkIndex = 0;
 
             while ((bytesRead = fis.read(buffer)) != -1) {
+                long chunkStart = fos.getChannel().position(); // record offset
+                chunkOffsets.put(chunkIndex, chunkStart);
+
                 byte[] nonce = new byte[GCM_NONCE_LENGTH];
                 random.nextBytes(nonce);
 
@@ -58,8 +64,12 @@ public class ChunkedFileCrypto {
                 fos.write(nonce);
                 fos.write(intToBytes(encrypted.length));
                 fos.write(encrypted);
+
+                chunkIndex++;
             }
         }
+
+        return chunkOffsets;
     }
 
     public static void decrypt(File encryptedFile, File outputFile, SecretKey key) throws Exception {
@@ -84,46 +94,41 @@ public class ChunkedFileCrypto {
         }
     }
 
-    public static void decryptByteRange(File encryptedFile, File outputFile, SecretKey key, int startByte, int endByte) throws Exception {
-        try (FileInputStream fis = new FileInputStream(encryptedFile);
+    public static void decryptByteRange(File encryptedFile, File outputFile, SecretKey key,
+                                        Map<Integer, Long> chunkOffsets, int startChunk, int endChunk) throws Exception {
+        try (RandomAccessFile raf = new RandomAccessFile(encryptedFile, "r");
              FileOutputStream fos = new FileOutputStream(outputFile)) {
 
-            byte[] nonce = new byte[GCM_NONCE_LENGTH];
-            byte[] lenBytes = new byte[4];
-            int currentOffset = 0;
+            for (int chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex++) {
+                long offset = chunkOffsets.get(chunkIndex);
+                raf.seek(offset);
 
-            while (fis.read(nonce) != -1) {
-                fis.read(lenBytes);
+                byte[] nonce = new byte[GCM_NONCE_LENGTH];
+                raf.readFully(nonce);
+
+                byte[] lenBytes = new byte[4];
+                raf.readFully(lenBytes);
                 int encLength = bytesToInt(lenBytes);
+
                 byte[] encData = new byte[encLength];
-                fis.read(encData);
-
-                int chunkTotalSize = GCM_NONCE_LENGTH + 4 + encLength;
-
-                if (currentOffset + chunkTotalSize < startByte) {
-                    currentOffset += chunkTotalSize;
-                    continue;
-                }
-
-                if (currentOffset >= endByte) break;
+                raf.readFully(encData);
 
                 Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
                 GCMParameterSpec spec = new GCMParameterSpec(GCM_TAG_LENGTH * 8, nonce);
                 cipher.init(Cipher.DECRYPT_MODE, key, spec);
+
                 byte[] decrypted = cipher.doFinal(encData);
                 fos.write(decrypted);
-
-                currentOffset += chunkTotalSize;
             }
         }
     }
 
     private static byte[] intToBytes(int value) {
         return new byte[]{
-                (byte) (value >>> 24),
-                (byte) (value >>> 16),
-                (byte) (value >>> 8),
-                (byte) value
+            (byte) (value >>> 24),
+            (byte) (value >>> 16),
+            (byte) (value >>> 8),
+            (byte) value
         };
     }
 
