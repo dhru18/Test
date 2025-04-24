@@ -91,84 +91,68 @@ public class S3ChunkedCryptoExample {
         s3Client.putObject(request);
     }
 
-    private static void downloadAndDecrypt(String bucket, String key, File outputFile, SecretKey keySecret) throws Exception {
-        S3Object s3Object = s3Client.getObject(bucket, key);
-        ObjectMetadata metadata = s3Object.getObjectMetadata();
-        String encodedOffsets = metadata.getUserMetaDataOf("chunk-offsets");
-
-        byte[] jsonBytes = Base64.getDecoder().decode(encodedOffsets);
-        String json = new String(jsonBytes, "UTF-8");
-
-        Map<Integer, Long> offsetMap = mapper.readValue(json, new TypeReference<Map<Integer, Long>>() {});
-
-        try (InputStream is = s3Object.getObjectContent();
-             FileOutputStream fos = new FileOutputStream(outputFile)) {
-
-            byte[] nonce = new byte[GCM_NONCE_LENGTH];
-            byte[] lenBytes = new byte[4];
-
-            while (is.read(nonce) != -1) {
-                is.read(lenBytes);
-                int len = bytesToInt(lenBytes);
-                byte[] enc = new byte[len];
-                is.read(enc);
-
-                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-                GCMParameterSpec spec = new GCMParameterSpec(GCM_TAG_LENGTH * 8, nonce);
-                cipher.init(Cipher.DECRYPT_MODE, keySecret, spec);
-                byte[] dec = cipher.doFinal(enc);
-
-                fos.write(dec);
-            }
-        }
-    }
-
-    public static void decryptRangeByChunkIndex(String bucket, String key, SecretKey secretKey,
-                                            int startChunkIndex, int endChunkIndex, File outputFile) throws Exception {
-    // Fetch metadata and extract chunkOffsets
-    ObjectMetadata metadata = s3Client.getObjectMetadata(bucket, key);
-    String encodedOffsets = metadata.getUserMetaDataOf("chunk-offsets");
-    byte[] jsonBytes = Base64.getDecoder().decode(encodedOffsets);
-    String json = new String(jsonBytes, "UTF-8");
-
-    Map<Integer, Long> offsetMap = mapper.readValue(json, new TypeReference<Map<Integer, Long>>() {});
-    List<Integer> sortedChunks = new ArrayList<>(offsetMap.keySet());
-    Collections.sort(sortedChunks);
-
-    // Calculate byte range
-    long startByte = offsetMap.get(startChunkIndex);
-    long endByte = (endChunkIndex + 1 < sortedChunks.size())
-            ? offsetMap.get(endChunkIndex + 1) - 1
-            : metadata.getContentLength() - 1;
-
-    System.out.println("Downloading bytes from " + startByte + " to " + endByte);
-
-    GetObjectRequest rangeRequest = new GetObjectRequest(bucket, key)
-            .withRange(startByte, endByte);
-
-    S3Object s3Object = s3Client.getObject(rangeRequest);
-
-    try (InputStream is = s3Object.getObjectContent();
+   public static void downloadAndDecrypt(AmazonS3 s3Client, String bucket, String key, File outputFile, SecretKey secretKey) throws Exception {
+    try (S3Object s3Object = s3Client.getObject(bucket, key);
+         InputStream s3is = s3Object.getObjectContent();
          FileOutputStream fos = new FileOutputStream(outputFile)) {
 
         byte[] nonce = new byte[GCM_NONCE_LENGTH];
         byte[] lenBytes = new byte[4];
 
-        while (is.read(nonce) != -1) {
-            is.read(lenBytes);
-            int len = bytesToInt(lenBytes);
-            byte[] enc = new byte[len];
-            is.read(enc);
+        while (true) {
+            if (!readFully(s3is, nonce)) break;
+            if (!readFully(s3is, lenBytes)) throw new IOException("Unexpected end of stream (length)");
+
+            int encryptedLength = bytesToInt(lenBytes);
+            byte[] encryptedData = new byte[encryptedLength];
+
+            if (!readFully(s3is, encryptedData)) throw new IOException("Unexpected end of stream (data)");
 
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            GCMParameterSpec spec = new GCMParameterSpec(GCM_TAG_LENGTH * 8, nonce);
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, spec);
-            byte[] dec = cipher.doFinal(enc);
-            fos.write(dec);
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_LENGTH * 8, nonce));
+            byte[] decrypted = cipher.doFinal(encryptedData);
+
+            fos.write(decrypted);
         }
     }
 }
 
+    public static void decryptRangeByChunkIndex(AmazonS3 s3Client, String bucket, String key,
+                                            SecretKey secretKey, Map<Integer, Long> chunkOffsets,
+                                            int startChunk, int endChunk, File outputFile) throws Exception {
+
+    try (FileOutputStream fos = new FileOutputStream(outputFile)) {
+        for (int chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex++) {
+            long start = chunkOffsets.get(chunkIndex);
+            long end = (chunkIndex + 1 < chunkOffsets.size()) 
+                        ? chunkOffsets.get(chunkIndex + 1) - 1
+                        : null; // until end of file
+
+            GetObjectRequest rangeRequest = new GetObjectRequest(bucket, key)
+                    .withRange(start, end != null ? end : null);
+
+            try (S3Object s3Object = s3Client.getObject(rangeRequest);
+                 InputStream s3is = s3Object.getObjectContent()) {
+
+                byte[] nonce = new byte[GCM_NONCE_LENGTH];
+                byte[] lenBytes = new byte[4];
+
+                if (!readFully(s3is, nonce)) throw new IOException("Missing nonce");
+                if (!readFully(s3is, lenBytes)) throw new IOException("Missing length");
+
+                int encLength = bytesToInt(lenBytes);
+                byte[] encryptedData = new byte[encLength];
+
+                if (!readFully(s3is, encryptedData)) throw new IOException("Missing encrypted data");
+
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(GCM_TAG_LENGTH * 8, nonce));
+                byte[] decrypted = cipher.doFinal(encryptedData);
+                fos.write(decrypted);
+            }
+        }
+    }
+}
 
     private static SecretKey generateKey() throws Exception {
         KeyGenerator keyGen = KeyGenerator.getInstance("AES");
