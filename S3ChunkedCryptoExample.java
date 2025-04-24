@@ -118,8 +118,17 @@ public class S3ChunkedCryptoExample {
 }
 
     public static void decryptRangeByChunkIndex(AmazonS3 s3Client, String bucket, String key,
-                                            SecretKey secretKey, Map<Integer, Long> chunkOffsets,
+                                            SecretKey secretKey, 
                                             int startChunk, int endChunk, File outputFile) throws Exception {
+// Fetch metadata and extract chunkOffsets
+    ObjectMetadata metadata = s3Client.getObjectMetadata(bucket, key);
+    String encodedOffsets = metadata.getUserMetaDataOf("chunk-offsets");
+    byte[] jsonBytes = Base64.getDecoder().decode(encodedOffsets);
+    String json = new String(jsonBytes, "UTF-8");
+
+    Map<Integer, Long> offsetMap = mapper.readValue(json, new TypeReference<Map<Integer, Long>>() {});
+    List<Integer> sortedChunks = new ArrayList<>(offsetMap.keySet());
+    Collections.sort(sortedChunks);
 
     try (FileOutputStream fos = new FileOutputStream(outputFile)) {
         for (int chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex++) {
